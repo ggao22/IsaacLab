@@ -40,7 +40,7 @@ INSTALL_REQUIRES = [
     "starlette==0.46.0",
 ]
 
-PYTORCH_INDEX_URL = ["https://download.pytorch.org/whl/cu118"]
+PYTORCH_INDEX_URL = ["https://download.pytorch.org/whl/cu128"]
 
 # Installation operation
 setup(
