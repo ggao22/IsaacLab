@@ -73,7 +73,7 @@ class EventCfg:
         params={
             "asset_cfg": SceneEntityCfg("cabinet", body_names='.*'),
             "pose_range": {
-                'x': (-0.0,-0.3),
+                'x': (-0.0,-0.2),
                 'y': (-0.2,0.2),
                 # 'yaw': (0.5,1.0),
             },
