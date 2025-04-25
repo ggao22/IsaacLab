@@ -610,6 +610,15 @@ class DualFrankaPipetteEnv(DirectRLEnv):
             dim=-1,
         )
 
+        # === NaN Check for Observations ===
+        # Check if any part of the observation is NaN for any environment
+        if torch.isnan(obs).any():
+            nan_mask_per_env = torch.isnan(obs).any(dim=1)
+            bad_env_ids = torch.where(nan_mask_per_env)[0]
+            print(f"WARN: NaN detected in observation tensor for envs: {bad_env_ids.tolist()}. Zeroing observation.")
+            # Zero out the observations for environments with NaNs
+            obs[nan_mask_per_env] = 0.0
+
         # Clamp observations for stability
         obs_clamped = torch.clamp(obs, -5.0, 5.0)
 
@@ -678,7 +687,6 @@ class DualFrankaPipetteEnv(DirectRLEnv):
             print(f"WARN: NaN detected in positions for envs: {bad_ids.tolist()}. Resetting.")
 
             self.reset_buf[bad_ids] = True
-            self.reward_buf[bad_ids] = 0.0
 
             # Avoid recursion during reset
             if not self._in_reset_loop:
