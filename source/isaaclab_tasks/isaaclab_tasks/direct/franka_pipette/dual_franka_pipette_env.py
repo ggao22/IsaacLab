@@ -424,8 +424,8 @@ class DualFrankaPipetteEnv(DirectRLEnv):
     def _pre_physics_step(self, actions: torch.Tensor):
         self.actions = actions.clone().clamp(-1.0, 1.0)
         # Split actions for left and right robots
-        actions_left = self.actions[:, :self._robot_left.num_actions]
-        actions_right = self.actions[:, self._robot_left.num_actions:]
+        actions_left = self.actions[:, :self._robot_left.num_joints]
+        actions_right = self.actions[:, self._robot_left.num_joints:]
 
         # Update targets for robot left
         targets_left = self.robot_left_dof_targets + self.robot_left_dof_speed_scales * self.dt * actions_left * self.cfg.action_scale
@@ -477,8 +477,8 @@ class DualFrankaPipetteEnv(DirectRLEnv):
         pipette_slider_joint_pos = self.pipette_slider_joint_pos
 
         # Split actions for penalties
-        actions_left = self.actions[:, :self._robot_left.num_actions]
-        actions_right = self.actions[:, self._robot_left.num_actions:]
+        actions_left = self.actions[:, :self._robot_left.num_joints]
+        actions_right = self.actions[:, self._robot_left.num_joints:]
 
         return self._compute_rewards(
             actions_left=actions_left,
