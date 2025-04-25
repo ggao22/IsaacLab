@@ -19,6 +19,8 @@ from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
 from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.terrains import TerrainImporterCfg
+from isaaclab.managers import EventTermCfg as EventTerm
+from isaaclab.managers import SceneEntityCfg 
 from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAAC_NUCLEUS_DIR
 from isaaclab.utils.math import sample_uniform
@@ -29,24 +31,25 @@ class EventCfg:
     """Configuration for randomization."""
 
     # -- cabinet
-    cabinet_scale = EventTerm(
-        func=mdp.randomize_rigid_body_scale,
-        mode="reset",
-        min_step_count_between_reset=1280,
-        params={
-            "asset_cfg": SceneEntityCfg("cabinet"),
-            "scale_range": (0.6, 1.2),
-        },
-    )
+    # cabinet_scale = EventTerm(
+    #     func=mdp.randomize_rigid_body_scale,
+    #     mode="prestartup",
+    #     min_step_count_between_reset=1280,
+    #     params={
+    #         "asset_cfg": SceneEntityCfg("cabinet", body_names='.*'),
+    #         "scale_range": (0.2, 1.5),
+    #     },
+    # )
 
     cabinet_physics_material = EventTerm(
         func=mdp.randomize_rigid_body_material,
         mode="reset",
         min_step_count_between_reset=1280,
         params={
-            "asset_cfg": SceneEntityCfg("cabinet"),
+            "asset_cfg": SceneEntityCfg("cabinet", body_names='.*'),
             "static_friction_range": (0.8, 1.2),
             "dynamic_friction_range": (0.8, 1.2),
+            'restitution_range': (1.0,1.0),
             "num_buckets": 640,
         },
     )
@@ -63,19 +66,20 @@ class EventCfg:
         },
     )
 
-    # cabinet_pose_limits = EventTerm(
-    #     func=mdp.reset_root_state_uniform,
-    #     min_step_count_between_reset=1280,
-    #     mode="reset",
-    #     params={
-    #         "asset_cfg": SceneEntityCfg("cabinet"),
-    #         "pose_range": {
-    #             'x': (1.0,1.0),
-    #             'y': (1.0,1.0),
-    #             'yaw': (1.0,1.0),
-    #         },
-    #     },
-    # )
+    cabinet_pose_limits = EventTerm(
+        func=mdp.reset_root_state_uniform,
+        min_step_count_between_reset=1280,
+        mode="reset",
+        params={
+            "asset_cfg": SceneEntityCfg("cabinet", body_names='.*'),
+            "pose_range": {
+                'x': (-0.0,-0.2),
+                'y': (-0.2,0.2),
+                # 'yaw': (0.5,1.0),
+            },
+            "velocity_range": {},
+        },
+    )
     
     # -- scene
     reset_gravity = EventTerm(
@@ -114,7 +118,7 @@ class FrankaCabinetRDEnvCfg(DirectRLEnvCfg):
     )
 
     # scene
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=4096, env_spacing=3.0, replicate_physics=True)
+    scene: InteractiveSceneCfg = InteractiveSceneCfg(num_envs=4096, env_spacing=3.0, replicate_physics=False)
 
     # robot
     robot = ArticulationCfg(
@@ -218,6 +222,10 @@ class FrankaCabinetRDEnvCfg(DirectRLEnvCfg):
         ),
     )
 
+
+    # events
+    events: EventCfg = EventCfg()
+
     action_scale = 7.5
     dof_velocity_scale = 0.1
 
@@ -227,6 +235,8 @@ class FrankaCabinetRDEnvCfg(DirectRLEnvCfg):
     open_reward_scale = 10.0
     action_penalty_scale = 0.05
     finger_reward_scale = 2.0
+
+
 
 
 class FrankaCabinetRDEnv(DirectRLEnv):
