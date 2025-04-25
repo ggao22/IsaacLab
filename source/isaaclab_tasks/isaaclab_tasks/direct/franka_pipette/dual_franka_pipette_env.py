@@ -162,7 +162,7 @@ class DualFrankaPipetteEnvCfg(DirectRLEnvCfg):
     pipette = ArticulationCfg(
         prim_path="/World/envs/env_.*/Pipette",
         spawn=UrdfFileCfg(
-            asset_path="~/IsaacLab/obj/pipe/pipe.urdf", # Make sure this path is correct or relative
+            asset_path="/home/george/IsaacLab/obj/pipe/pipe.urdf", # Make sure this path is correct or relative
             root_link_name="base_link",
             fix_base=False,
             force_usd_conversion=True,
@@ -327,8 +327,8 @@ class DualFrankaPipetteEnv(DirectRLEnv):
         # Right arm grasp offset (for pressing pipette top) - use hand frame origin (panda_link7)
         # We can define the target on the pipette later. The 'grasp' point for the right arm is just its EEF origin.
         self.robot_right_local_grasp_pos = torch.zeros((self.num_envs, 3), device=self.device)
-        self.robot_right_local_grasp_rot = torch.eye(4, device=self.device)[:3, :3].reshape(1, 4).repeat(self.num_envs, 1) # Identity rotation
-        self.robot_right_local_grasp_rot[:, 0] = 1.0 # Ensure valid quaternion (w=1)
+        # Identity quaternion [x, y, z, w]
+        self.robot_right_local_grasp_rot = torch.tensor([[0.0, 0.0, 0.0, 1.0]], device=self.device).repeat(self.num_envs, 1)
 
 
         # -- Find indices
@@ -351,13 +351,13 @@ class DualFrankaPipetteEnv(DirectRLEnv):
         # -- Define target points in local frames of pipette links
         # Grasp target on pipette base_link (e.g., origin)
         self.pipette_base_local_grasp_pos = torch.zeros((self.num_envs, 3), device=self.device)
-        self.pipette_base_local_grasp_rot = torch.eye(4, device=self.device)[:3, :3].reshape(1, 4).repeat(self.num_envs, 1)
-        self.pipette_base_local_grasp_rot[:, 0] = 1.0
+        # Identity quaternion [x, y, z, w]
+        self.pipette_base_local_grasp_rot = torch.tensor([[0.0, 0.0, 0.0, 1.0]], device=self.device).repeat(self.num_envs, 1)
 
         # Press target on pipette Movable_Link (e.g., origin)
         self.pipette_movable_local_press_pos = torch.zeros((self.num_envs, 3), device=self.device)
-        self.pipette_movable_local_press_rot = torch.eye(4, device=self.device)[:3, :3].reshape(1, 4).repeat(self.num_envs, 1)
-        self.pipette_movable_local_press_rot[:, 0] = 1.0
+        # Identity quaternion [x, y, z, w]
+        self.pipette_movable_local_press_rot = torch.tensor([[0.0, 0.0, 0.0, 1.0]], device=self.device).repeat(self.num_envs, 1)
 
 
         # -- Initialize state buffers
