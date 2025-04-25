@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<robot name="pipe_SLDASM">
+  <link name="base_link">
+    <inertial>
+      <origin xyz="0.000327014 -0.06564517 0.00031756" rpy="0 0 0" />
+      <mass value="0.0493858" />
+      <inertia ixx="5.986e-05" ixy="1.28e-06" ixz="-4.64e-07"
+               iyy="4.86e-06" iyz="1.99e-06" izz="5.928e-05" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry><mesh filename="meshes/base_link.STL" /></geometry>
+      <material name=""><color rgba="0.2 0.5 1.0 1.0" /></material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry><mesh filename="meshes/base_link.STL" /></geometry>
+    </collision>
+  </link>
+
+  <link name="Movable_Link">
+    <inertial>
+      <origin xyz="-1.59e-17 0.019064 1.86e-16" rpy="0 0 0" />
+      <mass value="0.0045" />
+      <inertia ixx="4.3e-07" ixy="4.5e-22" ixz="-5e-22"
+               iyy="1.33e-07" iyz="-4.7e-21" izz="4.3e-07" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry><mesh filename="meshes/Movable_Link.STL" /></geometry>
+      <material name=""><color rgba="0.8 0.3 0.3 1.0" /></material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry><mesh filename="meshes/Movable_Link.STL" /></geometry>
+    </collision>
+  </link>
+
+  <joint name="slider_joint" type="prismatic">
+    <origin xyz="0 0 0" rpy="0 0 0" />
+    <parent link="base_link" />
+    <child link="Movable_Link" />
+    <axis xyz="0 -1 0" />
+    <!-- only allow pushing inward -->
+    <limit effort="20" lower="0.0" upper="0.015" velocity="0.1" />
+  </joint>
+</robot>
