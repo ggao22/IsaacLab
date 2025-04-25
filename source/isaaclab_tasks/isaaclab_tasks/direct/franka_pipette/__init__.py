@@ -16,11 +16,11 @@ from . import agents
 
 gym.register(
     id="Isaac-Dual-Franka-Pipette-Direct-v0",
-    entry_point=f"{__name__}.franka_pipette_env:FrankaPipetteEnv",
+    entry_point=f"{__name__}.dual_franka_pipette_env:DualFrankaPipetteEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}.franka_pipette_env:FrankaPipetteEnvCfg",
-        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_manipgen_ppo_cfg.yaml",
+        "env_cfg_entry_point": f"{__name__}.dual_franka_pipette_env:DualFrankaPipetteEnvCfg",
+        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
         "rsl_rl_cfg_entry_point": f"{agents.__name__}.rsl_rl_ppo_cfg:FrankaCabinetPPORunnerCfg",
         "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_cfg.yaml",
     },
