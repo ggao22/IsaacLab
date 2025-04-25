@@ -678,6 +678,7 @@ class DualFrankaPipetteEnv(DirectRLEnv):
             print(f"WARN: NaN detected in positions for envs: {bad_ids.tolist()}. Resetting.")
 
             self.reset_buf[bad_ids] = True
+            self.reward_buf[bad_ids] = 0.0
 
             # Avoid recursion during reset
             if not self._in_reset_loop:
