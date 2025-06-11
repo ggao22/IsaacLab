@@ -944,11 +944,10 @@ class MovingHoleFactoryEnv(FactoryEnv):
         super()._pre_physics_step(action)
 
     def _get_observations(self):
-        noisy_fixed_pos = self.fixed_pos_obs_frame + self.init_fixed_pos_obs_noise
         prev_actions = self.actions.clone()
         obs_dict = {
             "fingertip_pos": self.fingertip_midpoint_pos,
-            "fingertip_pos_rel_fixed": self.fingertip_midpoint_pos - noisy_fixed_pos,
+            "fingertip_pos_rel_fixed": self.fingertip_midpoint_pos - self.fixed_pos,
             "fingertip_quat": self.fingertip_midpoint_quat,
             "ee_linvel": self.ee_linvel_fd,
             "ee_angvel": self.ee_angvel_fd,
@@ -957,13 +956,13 @@ class MovingHoleFactoryEnv(FactoryEnv):
         }
         state_dict = {
             "fingertip_pos":self.fingertip_midpoint_pos,
-            "fingertip_pos_rel_fixed": self.fingertip_midpoint_pos - self.fixed_pos_obs_frame,
+            "fingertip_pos_rel_fixed": self.fingertip_midpoint_pos - self.fixed_pos,
             "fingertip_quat": self.fingertip_midpoint_quat,
             "ee_linvel": self.fingertip_midpoint_linvel,
             "ee_angvel": self.fingertip_midpoint_angvel,
             "joint_pos": self.joint_pos[:, 0:7],
             "held_pos": self.held_pos,
-            "held_pos_rel_fixed": self.held_pos - self.fixed_pos_obs_frame,
+            "held_pos_rel_fixed": self.held_pos - self.fixed_pos,
             "held_quat": self.held_quat,
             "fixed_pos": self.fixed_pos,
             "fixed_quat": self.fixed_quat,
