@@ -20,48 +20,6 @@ from . import factory_control as fc
 from .factory_env_cfg import OBS_DIM_CFG, STATE_DIM_CFG, FactoryEnvCfg
 
 
-class MovingHoleFactoryEnv(FactoryEnv):
-    """
-    Moving fixing asset, simulates asset moving on conveyor belt
-    """
-    def __init__(self, cfg, render_mode=None, **kwargs):
-        super().__init__(cfg, render_mode, **kwargs)
-
-        v = getattr(self.cfg.task, "hole_speed", 0.0)
-        self._hole_linvel = torch.zeros((self.num_envs, 3), device=self.device)
-        self._hole_linvel[:, 0] = v            # +X direction
-
-        if "fixed_linvel" in self.cfg.obs_order:
-            self._fixed_linvel_obs = torch.zeros_like(self._hole_linvel)
-
-    def _pre_physics_step(self, action):
-        self._advance_hole(self.physics_dt * self.decimation)
-        super()._pre_physics_step(action)
-
-    def _advance_hole(self, dt):
-        #  current pose
-        pos = self._fixed_asset.data.root_pos_w    # [N,3]
-        quat = self._fixed_asset.data.root_quat_w  # [N,4]
-
-        new_pos = pos + self._hole_linvel * dt
-        #  write back (quat unchanged)
-        self._fixed_asset.write_root_pose_to_sim(
-            torch.cat((new_pos, quat), dim=-1), env_ids=torch.arange(self.num_envs, device="cpu")
-        )
-
-    def _get_observations(self):
-        obs = super()._get_observations()
-
-        if "fixed_linvel" in self.cfg.obs_order:
-            self._fixed_linvel_obs[:] = self._hole_linvel      # identical for all envs
-            obs["policy"] = torch.cat(
-                (obs["policy"], self._fixed_linvel_obs), dim=-1
-            )
-            obs["critic"] = torch.cat(
-                (obs["critic"], self._fixed_linvel_obs), dim=-1
-            )
-        return obs
-
 class FactoryEnv(DirectRLEnv):
     cfg: FactoryEnvCfg
 
@@ -926,3 +884,47 @@ class FactoryEnv(DirectRLEnv):
         self._set_gains(self.default_gains)
 
         physics_sim_view.set_gravity(carb.Float3(*self.cfg.sim.gravity))
+
+
+
+class MovingHoleFactoryEnv(FactoryEnv):
+    """
+    Moving fixing asset, simulates asset moving on conveyor belt
+    """
+    def __init__(self, cfg, render_mode=None, **kwargs):
+        super().__init__(cfg, render_mode, **kwargs)
+
+        v = getattr(self.cfg.task, "hole_speed", 0.0)
+        self._hole_linvel = torch.zeros((self.num_envs, 3), device=self.device)
+        self._hole_linvel[:, 0] = v            # +X direction
+
+        if "fixed_linvel" in self.cfg.obs_order:
+            self._fixed_linvel_obs = torch.zeros_like(self._hole_linvel)
+
+    def _pre_physics_step(self, action):
+        self._advance_hole(self.physics_dt * self.decimation)
+        super()._pre_physics_step(action)
+
+    def _advance_hole(self, dt):
+        #  current pose
+        pos = self._fixed_asset.data.root_pos_w    # [N,3]
+        quat = self._fixed_asset.data.root_quat_w  # [N,4]
+
+        new_pos = pos + self._hole_linvel * dt
+        #  write back (quat unchanged)
+        self._fixed_asset.write_root_pose_to_sim(
+            torch.cat((new_pos, quat), dim=-1), env_ids=torch.arange(self.num_envs, device="cpu")
+        )
+
+    def _get_observations(self):
+        obs = super()._get_observations()
+
+        if "fixed_linvel" in self.cfg.obs_order:
+            self._fixed_linvel_obs[:] = self._hole_linvel      # identical for all envs
+            obs["policy"] = torch.cat(
+                (obs["policy"], self._fixed_linvel_obs), dim=-1
+            )
+            obs["critic"] = torch.cat(
+                (obs["critic"], self._fixed_linvel_obs), dim=-1
+            )
+        return obs
