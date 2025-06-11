@@ -907,8 +907,13 @@ class MovingHoleFactoryEnv(FactoryEnv):
         super()._set_assets_to_default_pose(env_ids)
 
         # assign the conveyor velocity to the hole
+        # Create 6D velocity tensor (linear + angular velocity)
+        hole_velocity = torch.zeros((len(env_ids), 6), device=self.device)
+        hole_velocity[:, :3] = self._hole_linvel[env_ids]  # Set linear velocity
+        # Angular velocity remains zero (hole_velocity[:, 3:6] = 0.0)
+        
         self._fixed_asset.write_root_velocity_to_sim(
-            self._hole_linvel[env_ids], env_ids=env_ids
+            hole_velocity, env_ids=env_ids
         )
 
     def _get_observations(self):
