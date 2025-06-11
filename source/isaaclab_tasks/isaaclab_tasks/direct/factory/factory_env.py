@@ -912,13 +912,31 @@ class MovingHoleFactoryEnv(FactoryEnv):
         )
         
     def randomize_initial_state(self, env_ids):
-        # 1. let the parent do all its randomisation
         super().randomize_initial_state(env_ids)
 
-        # 2. immediately overwrite the root velocity that the parent zeroed
         hole_vel = torch.zeros((len(env_ids), 6), device=self.device)
         hole_vel[:, :3] = self._hole_linvel[env_ids]         # vx,vy,vz
         self._fixed_asset.write_root_velocity_to_sim(hole_vel, env_ids=env_ids)
+
+
+    def _apply_action(self):
+        root_vel = torch.zeros((self.num_envs, 6), device=self.device)
+        root_vel[:, :3] = self._hole_linvel
+        self._fixed_asset.write_root_velocity_to_sim(root_vel)
+
+        super()._apply_action()
+
+
+    def _pre_physics_step(self, action):
+        dt = self.physics_dt * self.cfg.decimation   # full control step dt
+        # advance pose: x_new = x_old + v*dt
+        pose = self._fixed_asset.data.root_pos_w
+        pose[:, 0] += self._hole_linvel[0, 0] * dt   # +X only
+        self._fixed_asset.write_root_pose_to_sim(
+            torch.cat((pose, self._fixed_asset.data.root_quat_w), dim=-1)
+        )
+
+        super()._pre_physics_step(action)
 
     def _get_observations(self):
         noisy_fixed_pos = self.fixed_pos_obs_frame + self.init_fixed_pos_obs_noise
