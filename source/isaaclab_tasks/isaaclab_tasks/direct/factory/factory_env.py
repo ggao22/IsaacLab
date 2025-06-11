@@ -894,33 +894,62 @@ class MovingHoleFactoryEnv(FactoryEnv):
     def __init__(self, cfg, render_mode=None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
-        # velocity tensor, one per env
-        v = getattr(self.cfg.task, "hole_speed", 0.0)          # default 0 (static)
+        v = getattr(self.cfg.task, "hole_speed", 0.0) 
         self._hole_linvel = torch.zeros((self.num_envs, 3), device=self.device)
-        self._hole_linvel[:, 0] = v                            # +X conveyor direction
+        self._hole_linvel[:, 0] = v  
 
-        # optional extra observation
         if "fixed_linvel" in self.cfg.obs_order:
             self._fixed_linvel_obs = torch.zeros_like(self._hole_linvel)
 
     def _set_assets_to_default_pose(self, env_ids):
         super()._set_assets_to_default_pose(env_ids)
 
-        # assign the conveyor velocity to the hole
-        # Create 6D velocity tensor (linear + angular velocity)
         hole_velocity = torch.zeros((len(env_ids), 6), device=self.device)
-        hole_velocity[:, :3] = self._hole_linvel[env_ids]  # Set linear velocity
-        # Angular velocity remains zero (hole_velocity[:, 3:6] = 0.0)
-        
+        hole_velocity[:, :3] = self._hole_linvel[env_ids]  # Set linear velocity only
+
         self._fixed_asset.write_root_velocity_to_sim(
             hole_velocity, env_ids=env_ids
         )
 
     def _get_observations(self):
-        obs = super()._get_observations()
-        if "fixed_linvel" in self.cfg.obs_order:
-            # identical velocity for all envs
-            self._fixed_linvel_obs[:] = self._hole_linvel
-            obs["policy"] = torch.cat((obs["policy"], self._fixed_linvel_obs), dim=-1)
-            obs["critic"] = torch.cat((obs["critic"], self._fixed_linvel_obs), dim=-1)
-        return obs
+        noisy_fixed_pos = self.fixed_pos_obs_frame + self.init_fixed_pos_obs_noise
+        prev_actions = self.actions.clone()
+        obs_dict = {
+            "fingertip_pos": self.fingertip_midpoint_pos,
+            "fingertip_pos_rel_fixed": self.fingertip_midpoint_pos - noisy_fixed_pos,
+            "fingertip_quat": self.fingertip_midpoint_quat,
+            "ee_linvel": self.ee_linvel_fd,
+            "ee_angvel": self.ee_angvel_fd,
+            "fixed_linvel": self._hole_linvel,     
+            "prev_actions": prev_actions,
+        }
+        state_dict = {
+            "fingertip_pos":self.fingertip_midpoint_pos,
+            "fingertip_pos_rel_fixed": self.fingertip_midpoint_pos - self.fixed_pos_obs_frame,
+            "fingertip_quat": self.fingertip_midpoint_quat,
+            "ee_linvel": self.fingertip_midpoint_linvel,
+            "ee_angvel": self.fingertip_midpoint_angvel,
+            "joint_pos": self.joint_pos[:, 0:7],
+            "held_pos": self.held_pos,
+            "held_pos_rel_fixed": self.held_pos - self.fixed_pos_obs_frame,
+            "held_quat": self.held_quat,
+            "fixed_pos": self.fixed_pos,
+            "fixed_quat": self.fixed_quat,
+            "task_prop_gains": self.task_prop_gains,
+            "pos_threshold": self.pos_threshold,
+            "rot_threshold": self.rot_threshold,
+            "fixed_linvel": self._hole_linvel,     
+            "prev_actions": prev_actions,
+        }
+
+        obs_tensors = [
+            obs_dict[name] for name in self.cfg.obs_order + ["prev_actions"]
+        ]
+        obs_tensors   = torch.cat(obs_tensors, dim=-1)
+
+        state_tensors = [
+            state_dict[name] for name in self.cfg.state_order + ["prev_actions"]
+        ]
+        state_tensors = torch.cat(state_tensors, dim=-1)
+
+        return {"policy": obs_tensors, "critic": state_tensors}
