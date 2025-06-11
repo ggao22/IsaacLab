@@ -901,9 +901,9 @@ class MovingHoleFactoryEnv(FactoryEnv):
         if "fixed_linvel" in self.cfg.obs_order:
             self._fixed_linvel_obs = torch.zeros_like(self._hole_linvel)
 
-    def _pre_physics_step(self, action):
-        self._advance_hole(self.physics_dt * self.decimation)
-        super()._pre_physics_step(action)
+    def _apply_action(self):
+        self._advance_hole(self.physics_dt)
+        super()._apply_action()
 
     def _advance_hole(self, dt):
         #  current pose
