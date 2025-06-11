@@ -24,6 +24,16 @@ gym.register(
 )
 
 gym.register(
+    id="Isaac-Factory-PegInsertMoving-Direct-v0",
+    entry_point="isaaclab_tasks.direct.factory:MovingHoleFactoryEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": FactoryTaskPegInsertCfg,
+        "rl_games_cfg_entry_point": f"{agents.__name__}:rl_games_ppo_cfg.yaml",
+    },
+)
+
+gym.register(
     id="Isaac-Factory-GearMesh-Direct-v0",
     entry_point="isaaclab_tasks.direct.factory:FactoryEnv",
     disable_env_checker=True,

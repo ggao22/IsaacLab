@@ -20,6 +20,7 @@ OBS_DIM_CFG = {
     "fingertip_quat": 4,
     "ee_linvel": 3,
     "ee_angvel": 3,
+    "fixed_linvel" = 3,
 }
 
 STATE_DIM_CFG = {
