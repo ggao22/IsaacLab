@@ -894,37 +894,28 @@ class MovingHoleFactoryEnv(FactoryEnv):
     def __init__(self, cfg, render_mode=None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
-        v = getattr(self.cfg.task, "hole_speed", 0.0)
+        # velocity tensor, one per env
+        v = getattr(self.cfg.task, "hole_speed", 0.0)          # default 0 (static)
         self._hole_linvel = torch.zeros((self.num_envs, 3), device=self.device)
-        self._hole_linvel[:, 0] = v            # +X direction
+        self._hole_linvel[:, 0] = v                            # +X conveyor direction
 
+        # optional extra observation
         if "fixed_linvel" in self.cfg.obs_order:
             self._fixed_linvel_obs = torch.zeros_like(self._hole_linvel)
 
-    def _apply_action(self):
-        self._advance_hole(self.physics_dt)
-        super()._apply_action()
+    def _set_assets_to_default_pose(self, env_ids):
+        super()._set_assets_to_default_pose(env_ids)
 
-    def _advance_hole(self, dt):
-        #  current pose
-        pos = self._fixed_asset.data.root_pos_w    # [N,3]
-        quat = self._fixed_asset.data.root_quat_w  # [N,4]
-
-        new_pos = pos + self._hole_linvel * dt
-        #  write back (quat unchanged)
-        self._fixed_asset.write_root_pose_to_sim(
-            torch.cat((new_pos, quat), dim=-1), env_ids=torch.arange(self.num_envs, device="cpu")
+        # assign the conveyor velocity to the hole
+        self._fixed_asset.write_root_velocity_to_sim(
+            self._hole_linvel[env_ids], env_ids=env_ids
         )
 
     def _get_observations(self):
         obs = super()._get_observations()
-
         if "fixed_linvel" in self.cfg.obs_order:
-            self._fixed_linvel_obs[:] = self._hole_linvel      # identical for all envs
-            obs["policy"] = torch.cat(
-                (obs["policy"], self._fixed_linvel_obs), dim=-1
-            )
-            obs["critic"] = torch.cat(
-                (obs["critic"], self._fixed_linvel_obs), dim=-1
-            )
+            # identical velocity for all envs
+            self._fixed_linvel_obs[:] = self._hole_linvel
+            obs["policy"] = torch.cat((obs["policy"], self._fixed_linvel_obs), dim=-1)
+            obs["critic"] = torch.cat((obs["critic"], self._fixed_linvel_obs), dim=-1)
         return obs
