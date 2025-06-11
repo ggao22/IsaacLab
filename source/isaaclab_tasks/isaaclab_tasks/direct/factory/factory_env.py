@@ -361,7 +361,7 @@ class FactoryEnv(DirectRLEnv):
 
         self.ctrl_target_fingertip_midpoint_pos = self.fingertip_midpoint_pos + pos_actions
         # To speed up learning, never allow the policy to move more than 5cm away from the base.
-        delta_pos = self.ctrl_target_fingertip_midpoint_pos - self.fixed_pos_action_frame
+        delta_pos = self.ctrl_target_fingertip_midpoint_pos - self.fixed_pos 
         pos_error_clipped = torch.clip(
             delta_pos, -self.cfg.ctrl.pos_action_bounds[0], self.cfg.ctrl.pos_action_bounds[1]
         )
