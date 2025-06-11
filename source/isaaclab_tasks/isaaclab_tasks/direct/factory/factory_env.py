@@ -361,11 +361,16 @@ class FactoryEnv(DirectRLEnv):
 
         self.ctrl_target_fingertip_midpoint_pos = self.fingertip_midpoint_pos + pos_actions
         # To speed up learning, never allow the policy to move more than 5cm away from the base.
-        delta_pos = self.ctrl_target_fingertip_midpoint_pos - self.fixed_pos 
-        pos_error_clipped = torch.clip(
-            delta_pos, -self.cfg.ctrl.pos_action_bounds[0], self.cfg.ctrl.pos_action_bounds[1]
+        delta_pos = (
+            self.ctrl_target_fingertip_midpoint_pos  # robot’s target
+            - self.fixed_pos                         # ← current hole position (moving)
         )
-        self.ctrl_target_fingertip_midpoint_pos = self.fixed_pos_action_frame + pos_error_clipped
+        pos_error_clipped = torch.clip(
+            delta_pos,
+            -self.cfg.ctrl.pos_action_bounds[0],
+            self.cfg.ctrl.pos_action_bounds[1],
+        )
+        self.ctrl_target_fingertip_midpoint_pos = self.fixed_pos + pos_error_clipped
 
         # Convert to quat and set rot target
         angle = torch.norm(rot_actions, p=2, dim=-1)
