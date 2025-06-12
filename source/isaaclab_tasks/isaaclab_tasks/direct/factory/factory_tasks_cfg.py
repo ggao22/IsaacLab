@@ -109,8 +109,8 @@ class PegInsert(FactoryTask):
     duration_s = 3.0
 
     # Robot
-    hand_init_pos: list = [0.0, 0.0, 0.07]  # Relative to fixed asset tip.
-    hand_init_pos_noise: list = [0.02, 0.02, 0.01]
+    hand_init_pos: list = [0.0, 0.0, 0.05]  # Relative to fixed asset tip.
+    hand_init_pos_noise: list = [0.02, 0.02, 0.0]
     hand_init_orn: list = [3.1416, 0.0, 0.0]
     hand_init_orn_noise: list = [0.0, 0.0, 0.785]
 
@@ -121,7 +121,7 @@ class PegInsert(FactoryTask):
     fixed_asset_speed = 0.06
 
     # Held Asset (applies to all tasks)
-    held_asset_pos_noise: list = [0.003, 0.0, 0.003]  # noise level of the held asset in gripper
+    held_asset_pos_noise: list = [0.003, 0.0, 0.0]  # noise level of the held asset in gripper
     held_asset_rot_init: float = 0.0
 
     # Rewards
@@ -153,7 +153,7 @@ class PegInsert(FactoryTask):
             collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.005, rest_offset=0.0),
         ),
         init_state=ArticulationCfg.InitialStateCfg(
-            pos=(0.4, 0.0, 0.05), rot=(1.0, 0.0, 0.0, 0.0), joint_pos={}, joint_vel={}
+            pos=(0.2, 0.0, 0.05), rot=(1.0, 0.0, 0.0, 0.0), joint_pos={}, joint_vel={}
         ),
         actuators={},
     )
@@ -163,7 +163,7 @@ class PegInsert(FactoryTask):
             usd_path=held_asset_cfg.usd_path,
             activate_contact_sensors=True,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
-                disable_gravity=True,
+                disable_gravity=False,
                 max_depenetration_velocity=5.0,
                 linear_damping=0.0,
                 angular_damping=0.0,
@@ -178,7 +178,7 @@ class PegInsert(FactoryTask):
             collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.005, rest_offset=0.0),
         ),
         init_state=ArticulationCfg.InitialStateCfg(
-            pos=(0.0, 0.4, 0.1), rot=(1.0, 0.0, 0.0, 0.0), joint_pos={}, joint_vel={}
+            pos=(0.5, 0.25, 0.07), rot=(1.0, 0.0, 0.0, 0.0), joint_pos={}, joint_vel={}
         ),
         actuators={},
     )

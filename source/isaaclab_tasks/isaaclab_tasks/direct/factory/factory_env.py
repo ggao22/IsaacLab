@@ -737,178 +737,93 @@ class FactoryEnv(DirectRLEnv):
         )
         self.fixed_pos_obs_frame[:] = fixed_tip_pos
 
-        # (2) Move gripper to randomizes location above fixed asset. Keep trying until IK succeeds.
-        # (a) get position vector to target
+        # Spawn HELD asset on the table
+        held_state = self._held_asset.data.default_root_state.clone()[env_ids]
+
+        held_state[:, :3] += self.scene.env_origins[env_ids]        # world‑space
+        pos_noise = torch.randn((len(env_ids), 3), device=self.device) * \
+                torch.tensor(self.cfg_task.held_asset_pos_noise,
+                             device=self.device)
+        held_state[:, :3] += pos_noise
+        held_state[:, 7:]  = 0.0
+
+        self._held_asset.write_root_pose_to_sim(held_state[:, :7], env_ids=env_ids)
+        self._held_asset.write_root_velocity_to_sim(held_state[:, 7:], env_ids=env_ids)
+        self._held_asset.reset()
+
+        # open fingers
+        self.ctrl_target_joint_pos[env_ids, 7:] = 0.04                           # 4 cm opening
+        self._robot.set_joint_position_target(self.ctrl_target_joint_pos[env_ids], env_ids=env_ids)
+
+        origins = self.scene.env_origins[env_ids]       
         bad_envs = env_ids.clone()
         ik_attempt = 0
+        POS_TOL = 1e-3     
+        ANG_TOL = 1e-3   
 
-        hand_down_quat = torch.zeros((self.num_envs, 4), dtype=torch.float32, device=self.device)
-        self.hand_down_euler = torch.zeros((self.num_envs, 3), dtype=torch.float32, device=self.device)
+        hand_down_quat = torch.zeros((self.num_envs, 4), device=self.device)
         while True:
-            n_bad = bad_envs.shape[0]
+            n_bad = bad_envs.numel()
 
-            above_fixed_pos = fixed_tip_pos.clone()
-            above_fixed_pos[:, 2] += self.cfg_task.hand_init_pos[2]
+            # --- target position (env‑local) ---
+            above_pos_world = held_state[bad_envs, :3].clone()
+            above_pos_world[:, 2] += 0.05                      # 5 cm above peg
+            above_pos_local = above_pos_world - origins[bad_envs]
 
-            rand_sample = torch.rand((n_bad, 3), dtype=torch.float32, device=self.device)
-            above_fixed_pos_rand = 2 * (rand_sample - 0.5)  # [-1, 1]
-            hand_init_pos_rand = torch.tensor(self.cfg_task.hand_init_pos_noise, device=self.device)
-            above_fixed_pos_rand = above_fixed_pos_rand @ torch.diag(hand_init_pos_rand)
-            above_fixed_pos[bad_envs] += above_fixed_pos_rand
+            # --- target orientation (radians) ---
+            base_eul = torch.tensor(
+                self.cfg_task.hand_init_orn, device=self.device
+            ).repeat(n_bad, 1)                 
+            noise = (torch.rand((n_bad, 3), device=self.device) - 0.5) * 2.0
+            noise *= torch.tensor(
+                self.cfg_task.hand_init_orn_noise, device=self.device
+            )                                   
+            eul = base_eul + noise
+            hand_down_quat[bad_envs] = torch_utils.quat_from_euler_xyz(eul[:,0], eul[:,1], eul[:,2])
 
-            # (b) get random orientation facing down
-            hand_down_euler = (
-                torch.tensor(self.cfg_task.hand_init_orn, device=self.device).unsqueeze(0).repeat(n_bad, 1)
+            # --- set IK targets & solve ---
+            self.ctrl_target_fingertip_midpoint_pos[bad_envs]  = above_pos_local
+            self.ctrl_target_fingertip_midpoint_quat[bad_envs] = hand_down_quat[bad_envs]
+
+            pos_err, ang_err = self.set_pos_inverse_kinematics(bad_envs)
+
+            bad_mask = torch.logical_or(
+                torch.linalg.norm(pos_err, dim=1) > POS_TOL,
+                torch.norm(ang_err, dim=1) > ANG_TOL
             )
+            bad_envs = bad_envs[bad_mask.nonzero(as_tuple=False).squeeze(-1)]
 
-            rand_sample = torch.rand((n_bad, 3), dtype=torch.float32, device=self.device)
-            above_fixed_orn_noise = 2 * (rand_sample - 0.5)  # [-1, 1]
-            hand_init_orn_rand = torch.tensor(self.cfg_task.hand_init_orn_noise, device=self.device)
-            above_fixed_orn_noise = above_fixed_orn_noise @ torch.diag(hand_init_orn_rand)
-            hand_down_euler += above_fixed_orn_noise
-            self.hand_down_euler[bad_envs, ...] = hand_down_euler
-            hand_down_quat[bad_envs, :] = torch_utils.quat_from_euler_xyz(
-                roll=hand_down_euler[:, 0], pitch=hand_down_euler[:, 1], yaw=hand_down_euler[:, 2]
-            )
-
-            # (c) iterative IK Method
-            self.ctrl_target_fingertip_midpoint_pos[bad_envs, ...] = above_fixed_pos[bad_envs, ...]
-            self.ctrl_target_fingertip_midpoint_quat[bad_envs, ...] = hand_down_quat[bad_envs, :]
-
-            pos_error, aa_error = self.set_pos_inverse_kinematics(env_ids=bad_envs)
-            pos_error = torch.linalg.norm(pos_error, dim=1) > 1e-3
-            angle_error = torch.norm(aa_error, dim=1) > 1e-3
-            any_error = torch.logical_or(pos_error, angle_error)
-            bad_envs = bad_envs[any_error.nonzero(as_tuple=False).squeeze(-1)]
-
-            # Check IK succeeded for all envs, otherwise try again for those envs
-            if bad_envs.shape[0] == 0:
+            if not len(bad_envs) or ik_attempt >= 20:
                 break
 
+            # fallback: reset joints, re‑open fingers, step once
             self._set_franka_to_default_pose(
-                joints=[0.00871, -0.10368, -0.00794, -1.49139, -0.00083, 1.38774, 0.0], env_ids=bad_envs
+                joints=[0.00871, -0.10368, -0.00794, -1.49139, -0.00083, 1.38774, 0.0],
+                env_ids=bad_envs
             )
-
+            self.ctrl_target_joint_pos[bad_envs, 7:] = 0.04
+            self._robot.set_joint_position_target(self.ctrl_target_joint_pos[bad_envs], env_ids=bad_envs)
+            self.step_sim_no_action()
             ik_attempt += 1
 
         self.step_sim_no_action()
 
-        # Add flanking gears after servo (so arm doesn't move them).
-        if self.cfg_task.name == "gear_mesh" and self.cfg_task.add_flanking_gears:
-            small_gear_state = self._small_gear_asset.data.default_root_state.clone()[env_ids]
-            small_gear_state[:, 0:7] = fixed_state[:, 0:7]
-            small_gear_state[:, 7:] = 0.0  # vel
-            self._small_gear_asset.write_root_pose_to_sim(small_gear_state[:, 0:7], env_ids=env_ids)
-            self._small_gear_asset.write_root_velocity_to_sim(small_gear_state[:, 7:], env_ids=env_ids)
-            self._small_gear_asset.reset()
-
-            large_gear_state = self._large_gear_asset.data.default_root_state.clone()[env_ids]
-            large_gear_state[:, 0:7] = fixed_state[:, 0:7]
-            large_gear_state[:, 7:] = 0.0  # vel
-            self._large_gear_asset.write_root_pose_to_sim(large_gear_state[:, 0:7], env_ids=env_ids)
-            self._large_gear_asset.write_root_velocity_to_sim(large_gear_state[:, 7:], env_ids=env_ids)
-            self._large_gear_asset.reset()
-
-        # (3) Randomize asset-in-gripper location.
-        # flip gripper z orientation
-        flip_z_quat = torch.tensor([0.0, 0.0, 1.0, 0.0], device=self.device).unsqueeze(0).repeat(self.num_envs, 1)
-        fingertip_flipped_quat, fingertip_flipped_pos = torch_utils.tf_combine(
-            q1=self.fingertip_midpoint_quat,
-            t1=self.fingertip_midpoint_pos,
-            q2=flip_z_quat,
-            t2=torch.zeros_like(self.fingertip_midpoint_pos),
-        )
-
-        # get default gripper in asset transform
-        held_asset_relative_pos, held_asset_relative_quat = self.get_handheld_asset_relative_pose()
-        asset_in_hand_quat, asset_in_hand_pos = torch_utils.tf_inverse(
-            held_asset_relative_quat, held_asset_relative_pos
-        )
-
-        translated_held_asset_quat, translated_held_asset_pos = torch_utils.tf_combine(
-            q1=fingertip_flipped_quat, t1=fingertip_flipped_pos, q2=asset_in_hand_quat, t2=asset_in_hand_pos
-        )
-
-        # Add asset in hand randomization
-        rand_sample = torch.rand((self.num_envs, 3), dtype=torch.float32, device=self.device)
-        self.held_asset_pos_noise = 2 * (rand_sample - 0.5)  # [-1, 1]
-        if self.cfg_task.name == "gear_mesh":
-            self.held_asset_pos_noise[:, 2] = -rand_sample[:, 2]  # [-1, 0]
-
-        held_asset_pos_noise = torch.tensor(self.cfg_task.held_asset_pos_noise, device=self.device)
-        self.held_asset_pos_noise = self.held_asset_pos_noise @ torch.diag(held_asset_pos_noise)
-        translated_held_asset_quat, translated_held_asset_pos = torch_utils.tf_combine(
-            q1=translated_held_asset_quat,
-            t1=translated_held_asset_pos,
-            q2=self.identity_quat,
-            t2=self.held_asset_pos_noise,
-        )
-
-        held_state = self._held_asset.data.default_root_state.clone()
-        held_state[:, 0:3] = translated_held_asset_pos + self.scene.env_origins
-        held_state[:, 3:7] = translated_held_asset_quat
-        held_state[:, 7:] = 0.0
-        self._held_asset.write_root_pose_to_sim(held_state[:, 0:7])
-        self._held_asset.write_root_velocity_to_sim(held_state[:, 7:])
-        self._held_asset.reset()
-
-        #  Close hand
-        # Set gains to use for quick resets.
-        reset_task_prop_gains = torch.tensor(self.cfg.ctrl.reset_task_prop_gains, device=self.device).repeat(
-            (self.num_envs, 1)
-        )
-        reset_rot_deriv_scale = self.cfg.ctrl.reset_rot_deriv_scale
-        self._set_gains(reset_task_prop_gains, reset_rot_deriv_scale)
-
-        self.step_sim_no_action()
-
-        grasp_time = 0.0
-        while grasp_time < 0.25:
-            self.ctrl_target_joint_pos[env_ids, 7:] = 0.0  # Close gripper.
-            self.ctrl_target_gripper_dof_pos = 0.0
-            self.close_gripper_in_place()
-            self.step_sim_no_action()
-            grasp_time += self.sim.get_physics_dt()
-
-        self.prev_joint_pos = self.joint_pos[:, 0:7].clone()
-        self.prev_fingertip_pos = self.fingertip_midpoint_pos.clone()
-        self.prev_fingertip_quat = self.fingertip_midpoint_quat.clone()
-
-        # Set initial actions to involve no-movement. Needed for EMA/correct penalties.
         self.actions = torch.zeros_like(self.actions)
         self.prev_actions = torch.zeros_like(self.actions)
-        # Back out what actions should be for initial state.
-        # Relative position to bolt tip.
+
+        self.prev_joint_pos  = self.joint_pos[:, :7].clone()
+        self.prev_fingertip_pos   = self.fingertip_midpoint_pos.clone()
+        self.prev_fingertip_quat  = self.fingertip_midpoint_quat.clone()
+
         self.fixed_pos_action_frame[:] = self.fixed_pos_obs_frame + self.init_fixed_pos_obs_noise
+        pos_actions = ((self.fingertip_midpoint_pos - self.fixed_pos_action_frame) @ torch.diag(
+            1 / torch.tensor(self.cfg.ctrl.pos_action_bounds, device=self.device)
+        ))
+        self.actions[:, :3] = self.prev_actions[:, :3] = pos_actions
+        self.actions[:, 5]  = self.prev_actions[:, 5]  = 0.0                   # no yaw yet
 
-        pos_actions = self.fingertip_midpoint_pos - self.fixed_pos_action_frame
-        pos_action_bounds = torch.tensor(self.cfg.ctrl.pos_action_bounds, device=self.device)
-        pos_actions = pos_actions @ torch.diag(1.0 / pos_action_bounds)
-        self.actions[:, 0:3] = self.prev_actions[:, 0:3] = pos_actions
-
-        # Relative yaw to bolt.
-        unrot_180_euler = torch.tensor([-np.pi, 0.0, 0.0], device=self.device).repeat(self.num_envs, 1)
-        unrot_quat = torch_utils.quat_from_euler_xyz(
-            roll=unrot_180_euler[:, 0], pitch=unrot_180_euler[:, 1], yaw=unrot_180_euler[:, 2]
-        )
-
-        fingertip_quat_rel_bolt = torch_utils.quat_mul(unrot_quat, self.fingertip_midpoint_quat)
-        fingertip_yaw_bolt = torch_utils.get_euler_xyz(fingertip_quat_rel_bolt)[-1]
-        fingertip_yaw_bolt = torch.where(
-            fingertip_yaw_bolt > torch.pi / 2, fingertip_yaw_bolt - 2 * torch.pi, fingertip_yaw_bolt
-        )
-        fingertip_yaw_bolt = torch.where(
-            fingertip_yaw_bolt < -torch.pi, fingertip_yaw_bolt + 2 * torch.pi, fingertip_yaw_bolt
-        )
-
-        yaw_action = (fingertip_yaw_bolt + np.deg2rad(180.0)) / np.deg2rad(270.0) * 2.0 - 1.0
-        self.actions[:, 5] = self.prev_actions[:, 5] = yaw_action
-
-        # Zero initial velocity.
-        self.ee_angvel_fd[:, :] = 0.0
-        self.ee_linvel_fd[:, :] = 0.0
-
-        # Set initial gains for the episode.
+        self.ee_angvel_fd.zero_()
+        self.ee_linvel_fd.zero_()
         self._set_gains(self.default_gains)
 
         physics_sim_view.set_gravity(carb.Float3(*self.cfg.sim.gravity))
