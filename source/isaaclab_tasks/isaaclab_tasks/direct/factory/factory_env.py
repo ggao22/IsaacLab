@@ -901,7 +901,7 @@ class MovingHoleFactoryEnv(FactoryEnv):
     def __init__(self, cfg, render_mode=None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
-        v = getattr(self.cfg_task, "hole_speed", 0.005) 
+        v = getattr(self.cfg_task, "fixed_asset_speed", 0.005) 
         self._hole_linvel = torch.zeros((self.num_envs, 3), device=self.device)
         self._hole_linvel[:, 0] = v  
 
