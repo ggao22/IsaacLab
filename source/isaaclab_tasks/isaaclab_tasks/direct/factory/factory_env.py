@@ -493,39 +493,50 @@ class FactoryEnv(DirectRLEnv):
         """Compute reward at current timestep."""
         rew_dict = {}
 
-        # Keypoint rewards.
         def squashing_fn(x, a, b):
             return 1 / (torch.exp(a * x) + b + torch.exp(-a * x))
 
         a0, b0 = self.cfg_task.keypoint_coef_baseline
-        rew_dict["kp_baseline"] = squashing_fn(self.keypoint_dist, a0, b0)
-        # a1, b1 = 25, 2
         a1, b1 = self.cfg_task.keypoint_coef_coarse
-        rew_dict["kp_coarse"] = squashing_fn(self.keypoint_dist, a1, b1)
         a2, b2 = self.cfg_task.keypoint_coef_fine
-        # a2, b2 = 300, 0
-        rew_dict["kp_fine"] = squashing_fn(self.keypoint_dist, a2, b2)
 
-        # Action penalties.
-        rew_dict["action_penalty"] = torch.norm(self.actions, p=2)
-        rew_dict["action_grad_penalty"] = torch.norm(self.actions - self.prev_actions, p=2, dim=-1)
-        rew_dict["curr_engaged"] = (
-            self._get_curr_successes(success_threshold=self.cfg_task.engage_threshold, check_rot=False).clone().float()
+        rew_dict["kp_baseline"] = squashing_fn(self.keypoint_dist, a0, b0)
+        rew_dict["kp_coarse"]   = squashing_fn(self.keypoint_dist, a1, b1)
+        rew_dict["kp_fine"]     = squashing_fn(self.keypoint_dist, a2, b2)
+
+        xy_err = torch.norm(
+            self.fingertip_midpoint_pos[:, :2] - self.fixed_pos[:, :2], dim=1
+        )                                   # [m]
+        rew_dict["xy_align"] = torch.exp(-50.0 * xy_err)   #  ~0 @ 3 cm, 0.08 @ 1 cm, 1 @ 0
+
+        z_clear = self.fingertip_midpoint_pos[:, 2] - self.fixed_pos[:, 2]
+        too_low = torch.relu(0.01 - z_clear)             # >0 if below +1 cm
+        misalign = torch.relu(xy_err - 0.01)              # >0 if xy_err > 1 cm
+        rew_dict["early_z_penalty"] = too_low * misalign   # zero elsewhere
+
+        rew_dict["action_penalty"]      = torch.norm(self.actions, p=2)
+        rew_dict["action_grad_penalty"] = torch.norm(
+            self.actions - self.prev_actions, p=2, dim=-1
         )
-        rew_dict["curr_successes"] = curr_successes.clone().float()
+        rew_dict["curr_engaged"]  = self._get_curr_successes(
+            success_threshold=self.cfg_task.engage_threshold, check_rot=False
+        ).float()
+        rew_dict["curr_successes"] = curr_successes.float()
 
         rew_buf = (
-            rew_dict["kp_coarse"]
-            + rew_dict["kp_baseline"]
+            rew_dict["kp_baseline"]
+            + rew_dict["kp_coarse"]
             + rew_dict["kp_fine"]
-            - rew_dict["action_penalty"] * self.cfg_task.action_penalty_scale
+            + rew_dict["xy_align"]                          #  << bonus
+            - 5.0 * rew_dict["early_z_penalty"]             #  << penalty (weight 5)
+            - rew_dict["action_penalty"]      * self.cfg_task.action_penalty_scale
             - rew_dict["action_grad_penalty"] * self.cfg_task.action_grad_penalty_scale
             + rew_dict["curr_engaged"]
             + rew_dict["curr_successes"]
         )
 
-        for rew_name, rew in rew_dict.items():
-            self.extras[f"logs_rew_{rew_name}"] = rew.mean()
+        for name, val in rew_dict.items():
+            self.extras[f"logs_rew_{name}"] = val.mean()
 
         return rew_buf
 
@@ -899,7 +910,7 @@ class MovingHoleFactoryEnv(FactoryEnv):
     def __init__(self, cfg, render_mode=None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
-        v = getattr(self.cfg_task, "hole_speed", 0.005) 
+        v = getattr(self.cfg_task, "fixed_asset_speed", 0.005) 
         self._hole_linvel = torch.zeros((self.num_envs, 3), device=self.device)
         self._hole_linvel[:, 0] = v  
 
@@ -925,23 +936,15 @@ class MovingHoleFactoryEnv(FactoryEnv):
 
 
     def _apply_action(self):
-        root_vel = torch.zeros((self.num_envs, 6), device=self.device)
-        root_vel[:, :3] = self._hole_linvel
-        self._fixed_asset.write_root_velocity_to_sim(root_vel)
+        new_pos = self._fixed_asset.data.root_pos_w + self._hole_linvel * self.physics_dt
+        new_quat = self._fixed_asset.data.root_quat_w
+        env_ids  = torch.arange(self.num_envs, device=self.device)
+        self._fixed_asset.write_root_pose_to_sim(
+            torch.cat((new_pos, new_quat), dim=-1), env_ids=env_ids
+        )
 
         super()._apply_action()
 
-
-    def _pre_physics_step(self, action):
-        dt = self.physics_dt * self.cfg.decimation   # full control step dt
-        # advance pose: x_new = x_old + v*dt
-        pose = self._fixed_asset.data.root_pos_w
-        pose[:, 0] += self._hole_linvel[0, 0] * dt   # +X only
-        self._fixed_asset.write_root_pose_to_sim(
-            torch.cat((pose, self._fixed_asset.data.root_quat_w), dim=-1)
-        )
-
-        super()._pre_physics_step(action)
 
     def _get_observations(self):
         prev_actions = self.actions.clone()
