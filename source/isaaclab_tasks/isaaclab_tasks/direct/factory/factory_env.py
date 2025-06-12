@@ -431,6 +431,8 @@ class FactoryEnv(DirectRLEnv):
         """Update intermediate values used for rewards and observations."""
         self._compute_intermediate_values(dt=self.physics_dt)
         time_out = self.episode_length_buf >= self.max_episode_length - 1
+        out_of_reach = self.fixed_pos[:,0] > 0.85   # terminate if socket too far
+        time_out = torch.logical_or(time_out, out_of_reach)
         return time_out, time_out
 
     def _get_curr_successes(self, success_threshold, check_rot=False):
