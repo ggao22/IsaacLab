@@ -33,6 +33,13 @@ class FactoryEnv(DirectRLEnv):
 
         super().__init__(cfg, render_mode, **kwargs)
 
+        v = getattr(self.cfg_task, "fixed_asset_speed", 0.005) 
+        self._hole_linvel = torch.zeros((self.num_envs, 3), device=self.device)
+        self._hole_linvel[:, 0] = v  
+
+        if "fixed_linvel" in self.cfg.obs_order:
+            self._fixed_linvel_obs = torch.zeros_like(self._hole_linvel)
+
         self._set_body_inertias()
         self._init_tensors()
         self._set_default_dynamics_parameters()
@@ -253,34 +260,32 @@ class FactoryEnv(DirectRLEnv):
 
     def _get_observations(self):
         """Get actor/critic inputs using asymmetric critic."""
-        noisy_fixed_pos = self.fixed_pos_obs_frame + self.init_fixed_pos_obs_noise
-
         prev_actions = self.actions.clone()
-
         obs_dict = {
             "fingertip_pos": self.fingertip_midpoint_pos,
-            "fingertip_pos_rel_fixed": self.fingertip_midpoint_pos - noisy_fixed_pos,
+            "fingertip_pos_rel_fixed": self.fingertip_midpoint_pos - self.fixed_pos,
             "fingertip_quat": self.fingertip_midpoint_quat,
             "ee_linvel": self.ee_linvel_fd,
             "ee_angvel": self.ee_angvel_fd,
+            "fixed_linvel": self._hole_linvel,     
             "prev_actions": prev_actions,
         }
-
         state_dict = {
-            "fingertip_pos": self.fingertip_midpoint_pos,
-            "fingertip_pos_rel_fixed": self.fingertip_midpoint_pos - self.fixed_pos_obs_frame,
+            "fingertip_pos":self.fingertip_midpoint_pos,
+            "fingertip_pos_rel_fixed": self.fingertip_midpoint_pos - self.fixed_pos,
             "fingertip_quat": self.fingertip_midpoint_quat,
             "ee_linvel": self.fingertip_midpoint_linvel,
             "ee_angvel": self.fingertip_midpoint_angvel,
             "joint_pos": self.joint_pos[:, 0:7],
             "held_pos": self.held_pos,
-            "held_pos_rel_fixed": self.held_pos - self.fixed_pos_obs_frame,
+            "held_pos_rel_fixed": self.held_pos - self.fixed_pos,
             "held_quat": self.held_quat,
             "fixed_pos": self.fixed_pos,
             "fixed_quat": self.fixed_quat,
             "task_prop_gains": self.task_prop_gains,
             "pos_threshold": self.pos_threshold,
             "rot_threshold": self.rot_threshold,
+            "fixed_linvel": self._hole_linvel,     
             "prev_actions": prev_actions,
         }
         obs_tensors = [obs_dict[obs_name] for obs_name in self.cfg.obs_order + ["prev_actions"]]
@@ -341,6 +346,13 @@ class FactoryEnv(DirectRLEnv):
 
     def _apply_action(self):
         """Apply actions for policy as delta targets from current position."""
+        new_pos = self._fixed_asset.data.root_pos_w + self._hole_linvel * self.physics_dt
+        new_quat = self._fixed_asset.data.root_quat_w
+        env_ids  = torch.arange(self.num_envs, device=self.device)
+        self._fixed_asset.write_root_pose_to_sim(
+            torch.cat((new_pos, new_quat), dim=-1), env_ids=env_ids
+        )
+
         # Get current yaw for success checking.
         _, _, curr_yaw = torch_utils.get_euler_xyz(self.fingertip_midpoint_quat)
         self.curr_yaw = torch.where(curr_yaw > np.deg2rad(235), curr_yaw - 2 * np.pi, curr_yaw)
@@ -900,90 +912,3 @@ class FactoryEnv(DirectRLEnv):
         self._set_gains(self.default_gains)
 
         physics_sim_view.set_gravity(carb.Float3(*self.cfg.sim.gravity))
-
-
-
-class MovingHoleFactoryEnv(FactoryEnv):
-    """
-    Moving fixing asset, simulates asset moving on conveyor belt
-    """
-    def __init__(self, cfg, render_mode=None, **kwargs):
-        super().__init__(cfg, render_mode, **kwargs)
-
-        v = getattr(self.cfg_task, "fixed_asset_speed", 0.005) 
-        self._hole_linvel = torch.zeros((self.num_envs, 3), device=self.device)
-        self._hole_linvel[:, 0] = v  
-
-        if "fixed_linvel" in self.cfg.obs_order:
-            self._fixed_linvel_obs = torch.zeros_like(self._hole_linvel)
-
-    def _set_assets_to_default_pose(self, env_ids):
-        super()._set_assets_to_default_pose(env_ids)
-
-        hole_velocity = torch.zeros((len(env_ids), 6), device=self.device)
-        hole_velocity[:, :3] = self._hole_linvel[env_ids]  # Set linear velocity only
-
-        self._fixed_asset.write_root_velocity_to_sim(
-            hole_velocity, env_ids=env_ids
-        )
-        
-    def randomize_initial_state(self, env_ids):
-        super().randomize_initial_state(env_ids)
-
-        hole_vel = torch.zeros((len(env_ids), 6), device=self.device)
-        hole_vel[:, :3] = self._hole_linvel[env_ids]         # vx,vy,vz
-        self._fixed_asset.write_root_velocity_to_sim(hole_vel, env_ids=env_ids)
-
-
-    def _apply_action(self):
-        new_pos = self._fixed_asset.data.root_pos_w + self._hole_linvel * self.physics_dt
-        new_quat = self._fixed_asset.data.root_quat_w
-        env_ids  = torch.arange(self.num_envs, device=self.device)
-        self._fixed_asset.write_root_pose_to_sim(
-            torch.cat((new_pos, new_quat), dim=-1), env_ids=env_ids
-        )
-
-        super()._apply_action()
-
-
-    def _get_observations(self):
-        prev_actions = self.actions.clone()
-        obs_dict = {
-            "fingertip_pos": self.fingertip_midpoint_pos,
-            "fingertip_pos_rel_fixed": self.fingertip_midpoint_pos - self.fixed_pos,
-            "fingertip_quat": self.fingertip_midpoint_quat,
-            "ee_linvel": self.ee_linvel_fd,
-            "ee_angvel": self.ee_angvel_fd,
-            "fixed_linvel": self._hole_linvel,     
-            "prev_actions": prev_actions,
-        }
-        state_dict = {
-            "fingertip_pos":self.fingertip_midpoint_pos,
-            "fingertip_pos_rel_fixed": self.fingertip_midpoint_pos - self.fixed_pos,
-            "fingertip_quat": self.fingertip_midpoint_quat,
-            "ee_linvel": self.fingertip_midpoint_linvel,
-            "ee_angvel": self.fingertip_midpoint_angvel,
-            "joint_pos": self.joint_pos[:, 0:7],
-            "held_pos": self.held_pos,
-            "held_pos_rel_fixed": self.held_pos - self.fixed_pos,
-            "held_quat": self.held_quat,
-            "fixed_pos": self.fixed_pos,
-            "fixed_quat": self.fixed_quat,
-            "task_prop_gains": self.task_prop_gains,
-            "pos_threshold": self.pos_threshold,
-            "rot_threshold": self.rot_threshold,
-            "fixed_linvel": self._hole_linvel,     
-            "prev_actions": prev_actions,
-        }
-
-        obs_tensors = [
-            obs_dict[name] for name in self.cfg.obs_order + ["prev_actions"]
-        ]
-        obs_tensors   = torch.cat(obs_tensors, dim=-1)
-
-        state_tensors = [
-            state_dict[name] for name in self.cfg.state_order + ["prev_actions"]
-        ]
-        state_tensors = torch.cat(state_tensors, dim=-1)
-
-        return {"policy": obs_tensors, "critic": state_tensors}
