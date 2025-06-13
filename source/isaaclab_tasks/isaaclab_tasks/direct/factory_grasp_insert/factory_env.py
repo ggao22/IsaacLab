@@ -351,19 +351,17 @@ class FactoryEnv(DirectRLEnv):
         self.generate_ctrl_signals()
 
     def _debug_trace(self, env_id: int = 0):
-        # make sure cached tensors are up‑to‑date
         if self.last_update_timestamp < self._robot._data._sim_timestamp:
             self._compute_intermediate_values(dt=self.physics_dt)
 
-        # ----- geometry for env_id -----
         xy_err = torch.linalg.norm(
             self.fingertip_midpoint_pos[env_id, :2] - self.held_pos[env_id, :2]
-        ).item() * 1e3                       # [mm]
+        ).item() * 1e3                     
 
         peg_top_z = self.held_pos[env_id,2] + self.cfg_task.held_asset_cfg.height * self.cfg_task.held_asset_grasp_height_frac
-        z_offset  = (self.fingertip_midpoint_pos[env_id,2] - peg_top_z).item()*1e3  # [mm]
+        z_offset  = (self.fingertip_midpoint_pos[env_id,2] - peg_top_z).item()*1e3 
 
-        gap = (self.joint_pos[env_id, 7] * 1e3).item()  # [mm]
+        gap = (self.joint_pos[env_id, 7] * 1e3).item() 
 
         print(
             f"stage={int(self.stage[env_id])}  "
@@ -405,9 +403,9 @@ class FactoryEnv(DirectRLEnv):
         self.ctrl_target_fingertip_midpoint_pos = self.fingertip_midpoint_pos + pos_actions
 
         reference_pos = torch.where(
-            (self.stage == 0).unsqueeze(-1),   
-            self.held_pos,                    
-            self.fixed_pos                    
+            (self.stage == 0).unsqueeze(-1),
+            self.held_pos, 
+            self.fixed_pos 
         )
         # To speed up learning, never allow the policy to move more than 5cm away from the base.
         delta_pos = pos_actions
@@ -438,7 +436,7 @@ class FactoryEnv(DirectRLEnv):
             roll=target_euler_xyz[:, 0], pitch=target_euler_xyz[:, 1], yaw=target_euler_xyz[:, 2]
         )
 
-        a = self.actions[:, 6]                # network out
+        a = self.actions[:, 6]               
         frac_closed = (torch.tanh(a) + 1.0) * 0.5      # 0 = open, 1 = closed
 
         MAX_GAP = 0.04                            
@@ -449,13 +447,13 @@ class FactoryEnv(DirectRLEnv):
         xy_err = torch.linalg.norm(
             self.fingertip_midpoint_pos[:, :2] - self.held_pos[:, :2], dim=1
         )
-        peg_75_z   = self.held_pos[:, 2] + \
+        peg_z   = self.held_pos[:, 2] + \
                     self.cfg_task.held_asset_grasp_height_frac * self.cfg_task.held_asset_cfg.height
-        z_clear75  = self.fingertip_midpoint_pos[:, 2] - peg_75_z
+        z_clear75  = self.fingertip_midpoint_pos[:, 2] - peg_z
 
         good_align = (
-            (xy_err < 0.008) &                      
-            (z_clear75 > -0.002) & (z_clear75 < 0.008)  
+            (xy_err < 0.008) &
+            (z_clear75 > -0.002) & (z_clear75 < 0.008)
         )
 
         self.align_hold_counter[good_align] += 1
@@ -540,13 +538,11 @@ class FactoryEnv(DirectRLEnv):
         """
         ST_GRASP, ST_LIFT, ST_INSERT = 0, 1, 2
 
-        h = self.cfg_task.held_asset_cfg.height           # peg height (m)
-        min_gap_closed = 0.006                            # fingers ≤ 6 mm ⇒ closed
-        target_clr = self.cfg_task.clearance_height       # lift goal above hole (m)
+        h = self.cfg_task.held_asset_cfg.height
+        min_gap_closed = 0.006
+        target_clr = self.cfg_task.clearance_height
 
-        # ------------------------------------------------------------------
-        # 1)   Secure grasp?
-        # ------------------------------------------------------------------
+        # 1) Check secure grasp
         xy_err_peg = torch.linalg.norm(
             self.fingertip_midpoint_pos[:, :2] - self.held_pos[:, :2], dim=1
         )
@@ -560,18 +556,13 @@ class FactoryEnv(DirectRLEnv):
             (finger_gap < min_gap_closed)
         )
 
-        # ------------------------------------------------------------------
-        # 2)   Lifted high enough while *in* the LIFT stage?
-        # ------------------------------------------------------------------
+        # 2) Check lifted high enough 
         lifted_now = (self.held_pos[:, 2] - self.fixed_pos[:, 2]) > target_clr
         lifted_ok  = (self.stage == ST_LIFT) & lifted_now
 
-        # ------------------------------------------------------------------
-        # 3)   Transitions
-        # ------------------------------------------------------------------
         next_stage = self.stage.clone()
         next_stage[(self.stage == ST_GRASP) & grasp_ok] = ST_LIFT
-        next_stage[lifted_ok]                           = ST_INSERT
+        next_stage[lifted_ok] = ST_INSERT
         return next_stage
 
 
@@ -583,37 +574,31 @@ class FactoryEnv(DirectRLEnv):
 
         rew = torch.zeros((self.num_envs,), device=self.device)
 
-        # ------------------------------------------------------------------
-        #  Shared geometry
-        # ------------------------------------------------------------------
         h = self.cfg_task.held_asset_cfg.height
         target_clr = self.cfg_task.clearance_height
 
-        # NB: most Stage‑0 variables were dropped – only one distance is used.
-        grasp_target_pos = self.held_pos.clone()          # (N,3)
-        grasp_target_pos[:, 2] += self.cfg_task.held_asset_grasp_height_frac * h                # 75 % up the peg
+        grasp_target_pos = self.held_pos.clone()
+        grasp_target_pos[:, 2] += self.cfg_task.held_asset_grasp_height_frac * h
 
         pos_err = torch.linalg.norm(
             self.fingertip_midpoint_pos - grasp_target_pos, dim=1
         )
 
-        # ===========================  STAGE 0 — GRASP  ==========================
+        # STAGE 0 — GRASP
         mask = self.stage == ST_GRASP
         if mask.any():
-            # single dense reward:  0 → +2 as xyz error → 0
             rew[mask] += 2.0 * torch.exp(-200.0 * pos_err)[mask]
 
-        # ===========================  STAGE 1 — LIFT   ==========================
+        # STAGE 1 — LIFT
         mask = self.stage == ST_LIFT
         if mask.any():
             height = (self.held_pos[:, 2] - self.fixed_pos[:, 2]).clamp(0.0, target_clr)
-            lift_bonus = 2.0 * height / target_clr         # 0→2 as we reach clearance
+            lift_bonus = 2.0 * height / target_clr
             rew[mask] += lift_bonus[mask]
 
-        # ===========================  STAGE 2 — INSERT ==========================
+        # STAGE 2 — INSERT 
         mask = self.stage == ST_INSERT
         if mask.any():
-            # --- key‑point shaping (unchanged)
             def _sq(x, a, b):
                 return 1.0 / (torch.exp(a * x) + b + torch.exp(-a * x))
             a0, b0 = self.cfg_task.keypoint_coef_baseline
@@ -640,9 +625,6 @@ class FactoryEnv(DirectRLEnv):
 
             rew[mask] += (kp + xy_align_hole - 5.0 * early_pen + engaged + success)[mask]
 
-        # ------------------------------------------------------------------
-        #  Book‑keeping
-        # ------------------------------------------------------------------
         self.reward_buf = rew
         return rew
 
@@ -831,10 +813,10 @@ class FactoryEnv(DirectRLEnv):
         )
         self.fixed_pos_obs_frame[:] = fixed_tip_pos
 
-        # Spawn HELD asset on the table
+        # Spawn peg on the table
         held_state = self._held_asset.data.default_root_state.clone()[env_ids]
 
-        held_state[:, :3] += self.scene.env_origins[env_ids]        # world‑space
+        held_state[:, :3] += self.scene.env_origins[env_ids]       
         pos_noise = torch.randn((len(env_ids), 3), device=self.device) * \
                 torch.tensor(self.cfg_task.held_asset_pos_noise,
                              device=self.device)
@@ -846,10 +828,10 @@ class FactoryEnv(DirectRLEnv):
         self._held_asset.reset()
 
         # open fingers
-        self.ctrl_target_joint_pos[env_ids, 7:] = 0.04                           # 4 cm opening
+        self.ctrl_target_joint_pos[env_ids, 7:] = 0.04 
         self._robot.set_joint_position_target(self.ctrl_target_joint_pos[env_ids], env_ids=env_ids)
 
-        origins = self.scene.env_origins[env_ids]       
+        origins = self.scene.env_origins[env_ids] 
         bad_envs = env_ids.clone()
         ik_attempt = 0
         POS_TOL = 1e-3     
@@ -861,7 +843,7 @@ class FactoryEnv(DirectRLEnv):
 
             # target position
             above_pos_world = held_state[bad_envs, :3].clone()
-            above_pos_world[:, 2] += 0.05                      # 5 cm above peg
+            above_pos_world[:, 2] += 0.05 
             above_pos_local = above_pos_world - origins[bad_envs]
 
             # target orientation 
@@ -890,7 +872,7 @@ class FactoryEnv(DirectRLEnv):
             if not len(bad_envs) or ik_attempt >= 20:
                 break
 
-            # fallback: reset joints, re‑open fingers, step once
+            # fallback
             self._set_franka_to_default_pose(
                 joints=[0.00871, -0.10368, -0.00794, -1.49139, -0.00083, 1.38774, 0.0],
                 env_ids=bad_envs
@@ -914,7 +896,7 @@ class FactoryEnv(DirectRLEnv):
             1 / torch.tensor(self.cfg.ctrl.pos_action_bounds, device=self.device)
         ))
         self.actions[:, :3] = self.prev_actions[:, :3] = pos_actions
-        self.actions[:, 5]  = self.prev_actions[:, 5]  = 0.0                   # no yaw yet
+        self.actions[:, 5]  = self.prev_actions[:, 5]  = 0.0
 
         self.ee_angvel_fd.zero_()
         self.ee_linvel_fd.zero_()

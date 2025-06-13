@@ -374,8 +374,8 @@ class FactoryEnv(DirectRLEnv):
         self.ctrl_target_fingertip_midpoint_pos = self.fingertip_midpoint_pos + pos_actions
         # To speed up learning, never allow the policy to move more than 5cm away from the base.
         delta_pos = (
-            self.ctrl_target_fingertip_midpoint_pos  # robot’s target
-            - self.fixed_pos                         # ← current hole position (moving)
+            self.ctrl_target_fingertip_midpoint_pos  
+            - self.fixed_pos                        
         )
         pos_error_clipped = torch.clip(
             delta_pos,
@@ -518,13 +518,13 @@ class FactoryEnv(DirectRLEnv):
 
         xy_err = torch.norm(
             self.fingertip_midpoint_pos[:, :2] - self.fixed_pos[:, :2], dim=1
-        )                                   # [m]
-        rew_dict["xy_align"] = torch.exp(-50.0 * xy_err)   #  ~0 @ 3 cm, 0.08 @ 1 cm, 1 @ 0
+        )
+        rew_dict["xy_align"] = torch.exp(-50.0 * xy_err)
 
         z_clear = self.fingertip_midpoint_pos[:, 2] - self.fixed_pos[:, 2]
-        too_low = torch.relu(0.01 - z_clear)             # >0 if below +1 cm
-        misalign = torch.relu(xy_err - 0.01)              # >0 if xy_err > 1 cm
-        rew_dict["early_z_penalty"] = too_low * misalign   # zero elsewhere
+        too_low = torch.relu(0.01 - z_clear)
+        misalign = torch.relu(xy_err - 0.01)
+        rew_dict["early_z_penalty"] = too_low * misalign
 
         rew_dict["action_penalty"]      = torch.norm(self.actions, p=2)
         rew_dict["action_grad_penalty"] = torch.norm(
@@ -539,8 +539,8 @@ class FactoryEnv(DirectRLEnv):
             rew_dict["kp_baseline"]
             + rew_dict["kp_coarse"]
             + rew_dict["kp_fine"]
-            + rew_dict["xy_align"]                          #  << bonus
-            - 5.0 * rew_dict["early_z_penalty"]             #  << penalty (weight 5)
+            + rew_dict["xy_align"]
+            - 5.0 * rew_dict["early_z_penalty"]
             - rew_dict["action_penalty"]      * self.cfg_task.action_penalty_scale
             - rew_dict["action_grad_penalty"] * self.cfg_task.action_grad_penalty_scale
             + rew_dict["curr_engaged"]
