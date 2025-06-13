@@ -14,7 +14,7 @@ from .factory_env_cfg import FactoryTaskGearMeshCfg, FactoryTaskNutThreadCfg, Fa
 ##
 
 gym.register(
-    id="Isaac-Factory-PegGraspInsertMoving-Direct-v0",
+    id="Isaac-Factory-GraspPegMovingInsert-Direct-v0",
     entry_point="isaaclab_tasks.direct.factory_grasp_insert:FactoryEnv",
     disable_env_checker=True,
     kwargs={

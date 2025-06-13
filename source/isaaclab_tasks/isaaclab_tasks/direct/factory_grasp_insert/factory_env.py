@@ -375,7 +375,7 @@ class FactoryEnv(DirectRLEnv):
         
     def _apply_action(self):
         """Apply actions for policy as delta targets from current position."""
-        self._debug_trace(env_id=17)
+        # self._debug_trace(env_id=17)
 
         new_pos = self._fixed_asset.data.root_pos_w + self._hole_linvel * self.physics_dt
         new_quat = self._fixed_asset.data.root_quat_w
@@ -438,29 +438,32 @@ class FactoryEnv(DirectRLEnv):
             roll=target_euler_xyz[:, 0], pitch=target_euler_xyz[:, 1], yaw=target_euler_xyz[:, 2]
         )
 
-        # closes (‑1), opens (+1)
-        grip_cmd = self.actions[:, 6].clamp(-1, 1)
-        desired_gap = 0.04 * (1 - grip_cmd) * 0.5
-        self.ctrl_target_gripper_dof_pos = desired_gap.unsqueeze(-1).repeat(1, 2)
+        a = self.actions[:, 6]                # network out
+        frac_closed = (torch.tanh(a) + 1.0) * 0.5      # 0 = open, 1 = closed
 
+        MAX_GAP = 0.04                            
+        desired_gap = (1.0 - frac_closed) * MAX_GAP    # 0 - 0.04 m gap
+        self.ctrl_target_gripper_dof_pos = desired_gap.unsqueeze(-1).repeat(1, 2)
+        
+        # Gripper auto-close
         xy_err = torch.linalg.norm(
             self.fingertip_midpoint_pos[:, :2] - self.held_pos[:, :2], dim=1
         )
-        peg_75_z  = self.held_pos[:, 2] + self.cfg_task.held_asset_grasp_height_frac * self.cfg_task.held_asset_cfg.height
-        z_clear75 = self.fingertip_midpoint_pos[:, 2] - peg_75_z
+        peg_75_z   = self.held_pos[:, 2] + \
+                    self.cfg_task.held_asset_grasp_height_frac * self.cfg_task.held_asset_cfg.height
+        z_clear75  = self.fingertip_midpoint_pos[:, 2] - peg_75_z
 
         good_align = (
-            (xy_err < 0.008) &                    # XY within 8 mm
-            (z_clear75 > -0.002) & (z_clear75 < 0.008)   # Z within −2…+8 mm
+            (xy_err < 0.008) &                      
+            (z_clear75 > -0.002) & (z_clear75 < 0.008)  
         )
 
-        # ---------- update stability counter ---------------------------------
-        self.align_hold_counter[good_align]  += 1
-        self.align_hold_counter[~good_align]  = 0
+        self.align_hold_counter[good_align] += 1
+        self.align_hold_counter[~good_align] = 0
 
-        auto_mask = self.align_hold_counter >= 20
+        auto_mask = (self.align_hold_counter >= 20) & (self.joint_pos[:, 7] > 0.006)
         if auto_mask.any():
-            self.ctrl_target_gripper_dof_pos[auto_mask] = 0.0055   # 5.5 mm joint gap
+            self.ctrl_target_gripper_dof_pos[auto_mask, :] = 0.0055
 
         self.generate_ctrl_signals()
 
@@ -527,15 +530,13 @@ class FactoryEnv(DirectRLEnv):
             is_rotated = self.curr_yaw < self.cfg_task.ee_success_yaw
             curr_successes = torch.logical_and(curr_successes, is_rotated)
         
-        fingers_closed = self.joint_pos[:, 7] < 0.005
+        fingers_closed = self.joint_pos[:, 7] < 0.006
         curr_successes = torch.logical_and(curr_successes, fingers_closed)
         return curr_successes
 
     def _compute_stage(self):
-        """Finite‑state machine: 0‑GRASP → 1‑LIFT → 2‑INSERT.
-        Each environment has to *pass through* the LIFT stage exactly once.
-        After a successful lift we latch into INSERT and never fall back, even
-        if the peg later drops below the clearance height.
+        """
+        Finite-state machine: 0-GRASP 1-LIFT 2-INSERT.
         """
         ST_GRASP, ST_LIFT, ST_INSERT = 0, 1, 2
 
@@ -544,7 +545,7 @@ class FactoryEnv(DirectRLEnv):
         target_clr = self.cfg_task.clearance_height       # lift goal above hole (m)
 
         # ------------------------------------------------------------------
-        # 1)   Secure grasp?  (same as before)
+        # 1)   Secure grasp?
         # ------------------------------------------------------------------
         xy_err_peg = torch.linalg.norm(
             self.fingertip_midpoint_pos[:, :2] - self.held_pos[:, :2], dim=1
@@ -560,10 +561,7 @@ class FactoryEnv(DirectRLEnv):
         )
 
         # ------------------------------------------------------------------
-        # 2)   Lifted high enough **while we are in the LIFT stage**?
-        #      Guarding with (self.stage == ST_LIFT) ensures we only test this
-        #      condition once – during the single LIFT pass – so INSERT never
-        #      reverts even if the peg later drops.
+        # 2)   Lifted high enough while *in* the LIFT stage?
         # ------------------------------------------------------------------
         lifted_now = (self.held_pos[:, 2] - self.fixed_pos[:, 2]) > target_clr
         lifted_ok  = (self.stage == ST_LIFT) & lifted_now
@@ -578,7 +576,7 @@ class FactoryEnv(DirectRLEnv):
 
 
     def _get_rewards(self):
-        """Compute per‑environment shaped reward."""
+        """Update rewards and compute success statistics."""
         # Sync stage
         self.stage = self._compute_stage()
         ST_GRASP, ST_LIFT, ST_INSERT = 0, 1, 2
@@ -591,28 +589,19 @@ class FactoryEnv(DirectRLEnv):
         h = self.cfg_task.held_asset_cfg.height
         target_clr = self.cfg_task.clearance_height
 
-        xy_err_fp = torch.linalg.norm(
-            self.fingertip_midpoint_pos[:, :2] - self.held_pos[:, :2], dim=1
+        # NB: most Stage‑0 variables were dropped – only one distance is used.
+        grasp_target_pos = self.held_pos.clone()          # (N,3)
+        grasp_target_pos[:, 2] += self.cfg_task.held_asset_grasp_height_frac * h                # 75 % up the peg
+
+        pos_err = torch.linalg.norm(
+            self.fingertip_midpoint_pos - grasp_target_pos, dim=1
         )
-        peg_top_z   = self.held_pos[:, 2] + self.cfg_task.held_asset_grasp_height_frac * h
-        z_clear_top = self.fingertip_midpoint_pos[:, 2] - peg_top_z
-        gap = self.joint_pos[:, 7]
 
         # ===========================  STAGE 0 — GRASP  ==========================
         mask = self.stage == ST_GRASP
         if mask.any():
-            xy_align = 2.0 * torch.exp(-100.0 * xy_err_fp)
-            z_penalty = 100.0 * torch.abs(z_clear_top)**2
-
-            xy_gate = (1.0 - xy_err_fp / 0.008).clamp(0.0, 1.0)
-            z_gate  = (1.0 - torch.abs(z_clear_top) / 0.002).clamp(0.0, 1.0)
-            contact_gate = xy_gate * z_gate
-
-            closing_frac  = torch.relu(0.008 - gap) / 0.0025          # 0→1
-            closing_bonus = 3.0 * closing_frac * contact_gate
-            early_penalty = 4.0 * closing_frac * (1.0 - contact_gate)
-
-            rew[mask] += (xy_align - z_penalty + closing_bonus - early_penalty)[mask]
+            # single dense reward:  0 → +2 as xyz error → 0
+            rew[mask] += 2.0 * torch.exp(-200.0 * pos_err)[mask]
 
         # ===========================  STAGE 1 — LIFT   ==========================
         mask = self.stage == ST_LIFT
@@ -624,7 +613,7 @@ class FactoryEnv(DirectRLEnv):
         # ===========================  STAGE 2 — INSERT ==========================
         mask = self.stage == ST_INSERT
         if mask.any():
-            # --- key‑point shaping
+            # --- key‑point shaping (unchanged)
             def _sq(x, a, b):
                 return 1.0 / (torch.exp(a * x) + b + torch.exp(-a * x))
             a0, b0 = self.cfg_task.keypoint_coef_baseline
@@ -634,13 +623,13 @@ class FactoryEnv(DirectRLEnv):
                   _sq(self.keypoint_dist, a1, b1) +
                   _sq(self.keypoint_dist, a2, b2))
 
-            xy_err_finger_hole = torch.linalg.norm(
+            xy_err_hole = torch.linalg.norm(
                 self.fingertip_midpoint_pos[:, :2] - self.fixed_pos[:, :2], dim=1
             )
-            xy_align_hole = torch.exp(-50.0 * xy_err_finger_hole)
+            xy_align_hole = torch.exp(-50.0 * xy_err_hole)
 
             z_clear = self.fingertip_midpoint_pos[:, 2] - self.fixed_pos[:, 2]
-            early_pen = torch.relu(0.01 - z_clear) * torch.relu(xy_err_finger_hole - 0.01)
+            early_pen = torch.relu(0.01 - z_clear) * torch.relu(xy_err_hole - 0.01)
 
             engaged = self._get_curr_successes(
                 self.cfg_task.engage_threshold, check_rot=False
