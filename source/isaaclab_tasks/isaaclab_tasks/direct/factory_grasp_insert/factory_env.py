@@ -156,7 +156,8 @@ class FactoryEnv(DirectRLEnv):
         self.ep_success_times = torch.zeros((self.num_envs,), dtype=torch.long, device=self.device)
         self.stage = torch.zeros((self.num_envs,), dtype=torch.long, device=self.device)
         self.prev_held_pos = torch.zeros((self.num_envs, 3), device=self.device)
-    
+        self.align_hold_counter = torch.zeros((self.num_envs,), dtype=torch.long, device=self.device)
+
     def _get_keypoint_offsets(self, num_keypoints):
         """Get uniformly-spaced keypoints along a line of unit length, centered at 0."""
         keypoint_offsets = torch.zeros((num_keypoints, 3), device=self.device)
@@ -359,8 +360,8 @@ class FactoryEnv(DirectRLEnv):
             self.fingertip_midpoint_pos[env_id, :2] - self.held_pos[env_id, :2]
         ).item() * 1e3                       # [mm]
 
-        peg_top_z = self.held_pos[env_id, 2] + self.cfg_task.held_asset_cfg.height
-        z_offset  = (self.fingertip_midpoint_pos[env_id, 2] - peg_top_z).item() * 1e3  # [mm]
+        peg_top_z = self.held_pos[env_id,2] + self.cfg_task.held_asset_cfg.height * self.cfg_task.held_asset_grasp_height_frac
+        z_offset  = (self.fingertip_midpoint_pos[env_id,2] - peg_top_z).item()*1e3  # [mm]
 
         gap = (self.joint_pos[env_id, 7] * 1e3).item()  # [mm]
 
@@ -368,12 +369,13 @@ class FactoryEnv(DirectRLEnv):
             f"stage={int(self.stage[env_id])}  "
             f"xy_err={xy_err:5.1f} mm  "
             f"z_off={z_offset:5.1f} mm  "
-            f"gap={gap:5.1f} mm"
+            f"gap={gap:5.1f} mm  "
+            f"grip action range: {self.actions[:,6].min():+.2f} … {self.actions[:,6].max():+.2f}"
         )
         
     def _apply_action(self):
         """Apply actions for policy as delta targets from current position."""
-        # self._debug_trace(env_id=0)
+        self._debug_trace(env_id=17)
 
         new_pos = self._fixed_asset.data.root_pos_w + self._hole_linvel * self.physics_dt
         new_quat = self._fixed_asset.data.root_quat_w
@@ -440,6 +442,25 @@ class FactoryEnv(DirectRLEnv):
         grip_cmd = self.actions[:, 6].clamp(-1, 1)
         desired_gap = 0.04 * (1 - grip_cmd) * 0.5
         self.ctrl_target_gripper_dof_pos = desired_gap.unsqueeze(-1).repeat(1, 2)
+
+        xy_err = torch.linalg.norm(
+            self.fingertip_midpoint_pos[:, :2] - self.held_pos[:, :2], dim=1
+        )
+        peg_75_z  = self.held_pos[:, 2] + self.cfg_task.held_asset_grasp_height_frac * self.cfg_task.held_asset_cfg.height
+        z_clear75 = self.fingertip_midpoint_pos[:, 2] - peg_75_z
+
+        good_align = (
+            (xy_err < 0.008) &                    # XY within 8 mm
+            (z_clear75 > -0.002) & (z_clear75 < 0.008)   # Z within −2…+8 mm
+        )
+
+        # ---------- update stability counter ---------------------------------
+        self.align_hold_counter[good_align]  += 1
+        self.align_hold_counter[~good_align]  = 0
+
+        auto_mask = self.align_hold_counter >= 20
+        if auto_mask.any():
+            self.ctrl_target_gripper_dof_pos[auto_mask] = 0.0055   # 5.5 mm joint gap
 
         self.generate_ctrl_signals()
 
@@ -511,81 +532,108 @@ class FactoryEnv(DirectRLEnv):
         return curr_successes
 
     def _compute_stage(self):
-        ST_GRASP, ST_INSERT = 0, 1
-        h = self.cfg_task.held_asset_cfg.height           # peg height
-        min_gap_closed = 0.006                           # 5.6 mm joint value
+        """Finite‑state machine: 0‑GRASP → 1‑LIFT → 2‑INSERT.
+        Each environment has to *pass through* the LIFT stage exactly once.
+        After a successful lift we latch into INSERT and never fall back, even
+        if the peg later drops below the clearance height.
+        """
+        ST_GRASP, ST_LIFT, ST_INSERT = 0, 1, 2
 
-        # geometry -------------------------------------------------------
-        xy_err = torch.linalg.norm(
+        h = self.cfg_task.held_asset_cfg.height           # peg height (m)
+        min_gap_closed = 0.006                            # fingers ≤ 6 mm ⇒ closed
+        target_clr = self.cfg_task.clearance_height       # lift goal above hole (m)
+
+        # ------------------------------------------------------------------
+        # 1)   Secure grasp?  (same as before)
+        # ------------------------------------------------------------------
+        xy_err_peg = torch.linalg.norm(
             self.fingertip_midpoint_pos[:, :2] - self.held_pos[:, :2], dim=1
         )
-        peg_top_z   = self.held_pos[:, 2] + h * 0.75
+        peg_top_z   = self.held_pos[:, 2] + self.cfg_task.held_asset_grasp_height_frac * h
         z_clear_top = self.fingertip_midpoint_pos[:, 2] - peg_top_z
         finger_gap  = self.joint_pos[:, 7]
 
-        in_xy   = xy_err        < 0.008                          # ≤ 8 mm
-        in_z    = torch.abs(z_clear_top) < 0.002                 # ±2 mm band
-        closed  = finger_gap     < min_gap_closed
-
-        grasp_ok = in_xy & in_z & closed
-        return torch.where(
-            grasp_ok,
-            torch.ones_like(xy_err, dtype=torch.long),   # 1 = INSERT
-            torch.zeros_like(xy_err, dtype=torch.long)   # 0 = GRASP
+        grasp_ok = (
+            (xy_err_peg < 0.008) &
+            (torch.abs(z_clear_top) < 0.002) &
+            (finger_gap < min_gap_closed)
         )
 
+        # ------------------------------------------------------------------
+        # 2)   Lifted high enough **while we are in the LIFT stage**?
+        #      Guarding with (self.stage == ST_LIFT) ensures we only test this
+        #      condition once – during the single LIFT pass – so INSERT never
+        #      reverts even if the peg later drops.
+        # ------------------------------------------------------------------
+        lifted_now = (self.held_pos[:, 2] - self.fixed_pos[:, 2]) > target_clr
+        lifted_ok  = (self.stage == ST_LIFT) & lifted_now
+
+        # ------------------------------------------------------------------
+        # 3)   Transitions
+        # ------------------------------------------------------------------
+        next_stage = self.stage.clone()
+        next_stage[(self.stage == ST_GRASP) & grasp_ok] = ST_LIFT
+        next_stage[lifted_ok]                           = ST_INSERT
+        return next_stage
+
+
     def _get_rewards(self):
-        # update stage reactively every step
+        """Compute per‑environment shaped reward."""
+        # Sync stage
         self.stage = self._compute_stage()
+        ST_GRASP, ST_LIFT, ST_INSERT = 0, 1, 2
 
-        ST_GRASP, ST_INSERT = 0, 1
         rew = torch.zeros((self.num_envs,), device=self.device)
-        h   = self.cfg_task.held_asset_cfg.height
 
-        # -------- geometry ----------
+        # ------------------------------------------------------------------
+        #  Shared geometry
+        # ------------------------------------------------------------------
+        h = self.cfg_task.held_asset_cfg.height
+        target_clr = self.cfg_task.clearance_height
+
         xy_err_fp = torch.linalg.norm(
             self.fingertip_midpoint_pos[:, :2] - self.held_pos[:, :2], dim=1
         )
-        peg_top_z   = self.held_pos[:, 2] + h * 0.75
+        peg_top_z   = self.held_pos[:, 2] + self.cfg_task.held_asset_grasp_height_frac * h
         z_clear_top = self.fingertip_midpoint_pos[:, 2] - peg_top_z
         gap = self.joint_pos[:, 7]
 
-        # ------------------------------------------------------------------
-        #  Stage‑0  (GRASP)  – XY align, Z penalty, closing bonus
-        # ------------------------------------------------------------------
+        # ===========================  STAGE 0 — GRASP  ==========================
         mask = self.stage == ST_GRASP
+        if mask.any():
+            xy_align = 2.0 * torch.exp(-100.0 * xy_err_fp)
+            z_penalty = 100.0 * torch.abs(z_clear_top)**2
 
-        xy_align = 2.0 * torch.exp(-100.0 * xy_err_fp)
+            xy_gate = (1.0 - xy_err_fp / 0.008).clamp(0.0, 1.0)
+            z_gate  = (1.0 - torch.abs(z_clear_top) / 0.002).clamp(0.0, 1.0)
+            contact_gate = xy_gate * z_gate
 
-        # (b) Z penalty (same as before)
-        z_penalty = 50.0 * torch.abs(z_clear_top)
+            closing_frac  = torch.relu(0.008 - gap) / 0.0025          # 0→1
+            closing_bonus = 3.0 * closing_frac * contact_gate
+            early_penalty = 4.0 * closing_frac * (1.0 - contact_gate)
 
-        # (c) Smooth contact gate  0‑>1 as we enter XY+Z band
-        xy_gate = torch.clip(1.0 - xy_err_fp / 0.008, 0.0, 1.0)        # 1 below 8 mm
-        z_gate  = torch.clip(1.0 - torch.abs(z_clear_top) / 0.002, 0.0, 1.0)  # 1 inside ±2 mm
-        contact_gate = xy_gate * z_gate                                # ∈[0,1]
+            rew[mask] += (xy_align - z_penalty + closing_bonus - early_penalty)[mask]
 
-        # (d) Closing progress
-        closing_frac  = torch.relu(0.008 - gap) / 0.0025               # 0 @ 8 mm, 1 @ 5.5 mm
-        closing_bonus = 3.0 * closing_frac * contact_gate              # scaled by gate
-        early_penalty = 4.0 * closing_frac * (1.0 - contact_gate)      # penalise if gate < 1
+        # ===========================  STAGE 1 — LIFT   ==========================
+        mask = self.stage == ST_LIFT
+        if mask.any():
+            height = (self.held_pos[:, 2] - self.fixed_pos[:, 2]).clamp(0.0, target_clr)
+            lift_bonus = 2.0 * height / target_clr         # 0→2 as we reach clearance
+            rew[mask] += lift_bonus[mask]
 
-        rew[mask] += (xy_align - z_penalty + closing_bonus - early_penalty)[mask]
-
-        
-        # ============  STAGE‑1 : INSERT  ============== #
+        # ===========================  STAGE 2 — INSERT ==========================
         mask = self.stage == ST_INSERT
         if mask.any():
-            # ---------- key‑point shaping --------------
-            def _sq(x,a,b): return 1 / (torch.exp(a*x)+b+torch.exp(-a*x))
-            a0,b0 = self.cfg_task.keypoint_coef_baseline
-            a1,b1 = self.cfg_task.keypoint_coef_coarse
-            a2,b2 = self.cfg_task.keypoint_coef_fine
-            kp = (_sq(self.keypoint_dist,a0,b0)
-                + _sq(self.keypoint_dist,a1,b1)
-                + _sq(self.keypoint_dist,a2,b2))
+            # --- key‑point shaping
+            def _sq(x, a, b):
+                return 1.0 / (torch.exp(a * x) + b + torch.exp(-a * x))
+            a0, b0 = self.cfg_task.keypoint_coef_baseline
+            a1, b1 = self.cfg_task.keypoint_coef_coarse
+            a2, b2 = self.cfg_task.keypoint_coef_fine
+            kp = (_sq(self.keypoint_dist, a0, b0) +
+                  _sq(self.keypoint_dist, a1, b1) +
+                  _sq(self.keypoint_dist, a2, b2))
 
-            # ---------- fingertip XY align & early Z penalty ---
             xy_err_finger_hole = torch.linalg.norm(
                 self.fingertip_midpoint_pos[:, :2] - self.fixed_pos[:, :2], dim=1
             )
@@ -594,24 +642,19 @@ class FactoryEnv(DirectRLEnv):
             z_clear = self.fingertip_midpoint_pos[:, 2] - self.fixed_pos[:, 2]
             early_pen = torch.relu(0.01 - z_clear) * torch.relu(xy_err_finger_hole - 0.01)
 
-            # ---------- success flags -------------------
             engaged = self._get_curr_successes(
-                success_threshold=self.cfg_task.engage_threshold, check_rot=False
+                self.cfg_task.engage_threshold, check_rot=False
             ).float()
             success = self._get_curr_successes(
-                success_threshold=self.cfg_task.success_threshold, check_rot=False
+                self.cfg_task.success_threshold, check_rot=False
             ).float()
 
-            rew[mask] += (kp + xy_align_hole - 5.0*early_pen + engaged + success)[mask]
+            rew[mask] += (kp + xy_align_hole - 5.0 * early_pen + engaged + success)[mask]
 
-        # ============  ACTION COSTS  =================== #
-        rew -= self.cfg_task.action_penalty_scale * torch.norm(self.actions, p=2, dim=-1)
-        rew -= self.cfg_task.action_grad_penalty_scale * torch.norm(
-            self.actions - self.prev_actions, p=2, dim=-1
-        )
-
-        self.prev_actions = self.actions.clone()
-        self.prev_held_pos = self.held_pos.clone()
+        # ------------------------------------------------------------------
+        #  Book‑keeping
+        # ------------------------------------------------------------------
+        self.reward_buf = rew
         return rew
 
     def _reset_idx(self, env_ids):

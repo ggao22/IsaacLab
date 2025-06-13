@@ -123,6 +123,8 @@ class PegInsert(FactoryTask):
     # Held Asset (applies to all tasks)
     held_asset_pos_noise: list = [0.003, 0.0, 0.0]  # noise level of the held asset in gripper
     held_asset_rot_init: float = 0.0
+    held_asset_grasp_height_frac = 0.6
+    clearance_height = 0.05
 
     # Rewards
     keypoint_coef_baseline: list = [5, 4]
