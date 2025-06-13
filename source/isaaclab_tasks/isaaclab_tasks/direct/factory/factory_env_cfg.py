@@ -21,6 +21,7 @@ OBS_DIM_CFG = {
     "ee_linvel": 3,
     "ee_angvel": 3,
     "fixed_linvel": 3,
+    "gripper_gap": 1,
 }
 
 STATE_DIM_CFG = {
@@ -39,6 +40,7 @@ STATE_DIM_CFG = {
     "ema_factor": 1,
     "pos_threshold": 3,
     "rot_threshold": 3,
+    "gripper_gap": 1,
 }
 
 
@@ -51,10 +53,10 @@ class ObsRandCfg:
 class CtrlCfg:
     ema_factor = 0.2
 
-    pos_action_bounds = [0.5, 0.5, 0.3]
+    pos_action_bounds = [0.6, 0.6, 0.6]
     rot_action_bounds = [1.0, 1.0, 1.0]
 
-    pos_action_threshold = [0.05, 0.05, 0.04]
+    pos_action_threshold = [0.06, 0.06, 0.06]
     rot_action_threshold = [0.097, 0.097, 0.097]
 
     reset_joints = [1.5178e-03, -1.9651e-01, -1.4364e-03, -1.9761, -2.7717e-04, 1.7796, 7.8556e-01]
@@ -71,7 +73,7 @@ class CtrlCfg:
 @configclass
 class FactoryEnvCfg(DirectRLEnvCfg):
     decimation = 8
-    action_space = 6
+    action_space = 7
     # num_*: will be overwritten to correspond to obs_order, state_order.
     observation_space = 21
     state_space = 72

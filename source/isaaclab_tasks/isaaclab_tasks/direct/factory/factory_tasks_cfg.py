@@ -118,7 +118,7 @@ class PegInsert(FactoryTask):
     fixed_asset_init_pos_noise: list = [0.05, 0.05, 0.05]
     fixed_asset_init_orn_deg: float = 0.0
     fixed_asset_init_orn_range_deg: float = 360.0
-    fixed_asset_speed = 0.06
+    fixed_asset_speed = 0.04
 
     # Held Asset (applies to all tasks)
     held_asset_pos_noise: list = [0.003, 0.0, 0.0]  # noise level of the held asset in gripper
@@ -178,7 +178,7 @@ class PegInsert(FactoryTask):
             collision_props=sim_utils.CollisionPropertiesCfg(contact_offset=0.005, rest_offset=0.0),
         ),
         init_state=ArticulationCfg.InitialStateCfg(
-            pos=(0.5, 0.25, 0.07), rot=(1.0, 0.0, 0.0, 0.0), joint_pos={}, joint_vel={}
+            pos=(0.5, 0.25, 0.03), rot=(1.0, 0.0, 0.0, 0.0), joint_pos={}, joint_vel={}
         ),
         actuators={},
     )
